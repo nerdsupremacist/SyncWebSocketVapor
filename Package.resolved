@@ -131,9 +131,9 @@
         "package": "Sync",
         "repositoryURL": "https://github.com/nerdsupremacist/Sync.git",
         "state": {
-          "branch": "main",
-          "revision": "f32064eafb9f0475ce8921e0c9b64898b75fa44c",
-          "version": null
+          "branch": null,
+          "revision": "b2a680e976e693319f7f4241fe61d9498a083a60",
+          "version": "0.1.0"
         }
       },
       {
