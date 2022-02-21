@@ -1,11 +1,11 @@
 
 import Vapor
 import Sync
-import Combine
+import OpenCombineShim
 
 extension RoutesBuilder {
     @discardableResult
-    public func syncObjectOverWebSocket<Value : SyncedObject>(
+    public func syncObjectOverWebSocket<Value : SyncableObject>(
         _ path: PathComponent...,
         maxFrameSize: WebSocketMaxFrameSize = .`default`,
         shouldUpgrade: @escaping ((Request) -> EventLoopFuture<HTTPHeaders?>) = {
@@ -22,7 +22,7 @@ extension RoutesBuilder {
     }
 
     @discardableResult
-    public func syncObjectOverWebSocket<Value : SyncedObject>(
+    public func syncObjectOverWebSocket<Value : SyncableObject>(
         _ path: [PathComponent],
         maxFrameSize: WebSocketMaxFrameSize = .`default`,
         shouldUpgrade: @escaping ((Request) -> EventLoopFuture<HTTPHeaders?>) = {
@@ -37,7 +37,7 @@ extension RoutesBuilder {
                 let initialData = try codingContext.encode(value)
                 let connection = WebSocketServerConnection(webSocket: webSocket, codingContext: codingContext)
                 webSocket.send(raw: initialData, opcode: .binary)
-                let manager = value.manager(with: connection)
+                let manager = value.sync(with: connection)
                 webSocket.onClose.whenSuccess { [manager] _ in
                     _ = manager
                 }
@@ -52,11 +52,19 @@ private class WebSocketServerConnection: ProducerConnection {
     let webSocket: WebSocket
     let codingContext: EventCodingContext
 
+    @Published
+    private(set) var isConnected: Bool
+
+    var isConnectedPublisher: AnyPublisher<Bool, Never> {
+        return $isConnected.eraseToAnyPublisher()
+    }
+
     private let subject = PassthroughSubject<Data, Never>()
 
     init(webSocket: WebSocket, codingContext: EventCodingContext) {
         self.webSocket = webSocket
         self.codingContext = codingContext
+        self.isConnected = true
         webSocket.onBinary { [weak self] _, buffer in
             let length = buffer.readableBytes
             guard let data = buffer.getData(at: 0, length: length) else { return }
@@ -66,10 +74,9 @@ private class WebSocketServerConnection: ProducerConnection {
             guard let data = string.data(using: .utf8) else { return }
             self?.subject.send(data)
         }
-    }
-
-    var isConnected: Bool {
-        return !webSocket.isClosed
+        webSocket.onClose.whenComplete { [weak self] _ in
+            self?.isConnected = false
+        }
     }
 
     func disconnect() {
