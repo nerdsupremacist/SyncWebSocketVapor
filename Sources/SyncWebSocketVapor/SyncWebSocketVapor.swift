@@ -2,6 +2,7 @@
 import Vapor
 import Sync
 import OpenCombineShim
+@_exported import NIO
 
 extension RoutesBuilder {
     @discardableResult
@@ -31,18 +32,103 @@ extension RoutesBuilder {
         codingContext: EventCodingContext = JSONEventCodingContext(),
         value getValue: @escaping (Request) throws -> Value
     ) -> Route {
+        return syncObjectOverWebSocket(path, maxFrameSize: maxFrameSize, shouldUpgrade: shouldUpgrade, codingContext: codingContext) { request in
+            return request.eventLoop.tryFuture {
+                return try getValue(request)
+            }
+        }
+    }
+}
+
+extension RoutesBuilder {
+    @discardableResult
+    public func syncObjectOverWebSocket<Value : SyncableObject>(
+        _ path: PathComponent...,
+        maxFrameSize: WebSocketMaxFrameSize = .`default`,
+        shouldUpgrade: @escaping ((Request) -> EventLoopFuture<HTTPHeaders?>) = {
+            $0.eventLoop.makeSucceededFuture([:])
+        },
+        codingContext: EventCodingContext = JSONEventCodingContext(),
+        value getValue: @escaping (Request) async throws -> Value
+    ) -> Route {
+        return syncObjectOverWebSocket(path,
+                                       maxFrameSize: maxFrameSize,
+                                       shouldUpgrade: shouldUpgrade,
+                                       codingContext: codingContext,
+                                       value: getValue)
+    }
+
+    @discardableResult
+    public func syncObjectOverWebSocket<Value : SyncableObject>(
+        _ path: [PathComponent],
+        maxFrameSize: WebSocketMaxFrameSize = .`default`,
+        shouldUpgrade: @escaping ((Request) -> EventLoopFuture<HTTPHeaders?>) = {
+            $0.eventLoop.makeSucceededFuture([:])
+        },
+        codingContext: EventCodingContext = JSONEventCodingContext(),
+        value getValue: @escaping (Request) async throws -> Value
+    ) -> Route {
+        return syncObjectOverWebSocket(path,
+                                       maxFrameSize: maxFrameSize,
+                                       shouldUpgrade: shouldUpgrade,
+                                       codingContext: codingContext) { request -> EventLoopFuture<Value> in
+
+            let promise = request.eventLoop.makePromise(of: Value.self)
+            promise.completeWithTask {
+                try await getValue(request)
+            }
+            return promise.futureResult
+        }
+    }
+}
+
+
+extension RoutesBuilder {
+    @discardableResult
+    public func syncObjectOverWebSocket<Value : SyncableObject>(
+        _ path: PathComponent...,
+        maxFrameSize: WebSocketMaxFrameSize = .`default`,
+        shouldUpgrade: @escaping ((Request) -> EventLoopFuture<HTTPHeaders?>) = {
+            $0.eventLoop.makeSucceededFuture([:])
+        },
+        codingContext: EventCodingContext = JSONEventCodingContext(),
+        value getValue: @escaping (Request) -> EventLoopFuture<Value>
+    ) -> Route {
+        return syncObjectOverWebSocket(path,
+                                       maxFrameSize: maxFrameSize,
+                                       shouldUpgrade: shouldUpgrade,
+                                       codingContext: codingContext,
+                                       value: getValue)
+    }
+
+    @discardableResult
+    public func syncObjectOverWebSocket<Value : SyncableObject>(
+        _ path: [PathComponent],
+        maxFrameSize: WebSocketMaxFrameSize = .`default`,
+        shouldUpgrade: @escaping ((Request) -> EventLoopFuture<HTTPHeaders?>) = {
+            $0.eventLoop.makeSucceededFuture([:])
+        },
+        codingContext: EventCodingContext = JSONEventCodingContext(),
+        value getValue: @escaping (Request) -> EventLoopFuture<Value>
+    ) -> Route {
         return webSocket(path, maxFrameSize: maxFrameSize, shouldUpgrade: shouldUpgrade) { request, webSocket in
-            do {
-                let value = try getValue(request)
-                let initialData = try codingContext.encode(value)
-                let connection = WebSocketServerConnection(webSocket: webSocket, codingContext: codingContext)
-                webSocket.send(raw: initialData, opcode: .binary)
-                let manager = value.sync(with: connection)
-                webSocket.onClose.whenSuccess { [manager] _ in
-                    _ = manager
+            getValue(request).whenComplete { result in
+                switch result {
+                case .success(let value):
+                    do {
+                        let initialData = try codingContext.encode(value)
+                        let connection = WebSocketServerConnection(webSocket: webSocket, codingContext: codingContext)
+                        webSocket.send(raw: initialData, opcode: .binary)
+                        let manager = value.sync(with: connection)
+                        webSocket.onClose.whenSuccess { [manager] _ in
+                            _ = manager
+                        }
+                    } catch {
+                        _ = webSocket.close(code: .unexpectedServerError)
+                    }
+                case .failure:
+                    _ = webSocket.close(code: .unexpectedServerError)
                 }
-            } catch {
-                _ = webSocket.close(code: .unexpectedServerError)
             }
         }
     }
