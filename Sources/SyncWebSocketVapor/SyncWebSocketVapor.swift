@@ -12,7 +12,7 @@ extension RoutesBuilder {
             $0.eventLoop.makeSucceededFuture([:])
         },
         codingContext: EventCodingContext = JSONEventCodingContext(),
-        value getValue: @escaping (Request) -> Value
+        value getValue: @escaping (Request) throws -> Value
     ) -> Route {
         return syncObjectOverWebSocket(path,
                                        maxFrameSize: maxFrameSize,
@@ -29,11 +29,11 @@ extension RoutesBuilder {
             $0.eventLoop.makeSucceededFuture([:])
         },
         codingContext: EventCodingContext = JSONEventCodingContext(),
-        value getValue: @escaping (Request) -> Value
+        value getValue: @escaping (Request) throws -> Value
     ) -> Route {
         return webSocket(path, maxFrameSize: maxFrameSize, shouldUpgrade: shouldUpgrade) { request, webSocket in
             do {
-                let value = getValue(request)
+                let value = try getValue(request)
                 let initialData = try codingContext.encode(value)
                 let connection = WebSocketServerConnection(webSocket: webSocket, codingContext: codingContext)
                 webSocket.send(raw: initialData, opcode: .binary)
@@ -42,7 +42,7 @@ extension RoutesBuilder {
                     _ = manager
                 }
             } catch {
-
+                _ = webSocket.close(code: .unexpectedServerError)
             }
         }
     }
